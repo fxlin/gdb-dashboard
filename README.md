@@ -2,7 +2,7 @@
 
 GDB dashboard is a standalone `.gdbinit` file written using the [Python API][] that enables a modular interface showing relevant information about the program being debugged. Its main goal is to reduce the number of GDB commands needed to inspect the status of current program thus allowing the developer to primarily focus on the control flow.
 
-![Screenshot](https://raw.githubusercontent.com/wiki/cyrus-and/gdb-dashboard/Screenshot.png)
+![Screenshot](gdb-dash-aarch64.png)
 
 [Python API]: https://sourceware.org/gdb/onlinedocs/gdb/Python-API.html
 
