@@ -2286,6 +2286,16 @@ set python print-stack full
 
 python Dashboard.start()
 
+# --- kernel hacking (qemu) specific --- #
+target remote :1234
+
+dashboard -layout breakpoints registers assembly stack source
+dashboard source -style height 20
+dashboard assembly -style height 20
+dashboard registers -style column-major True
+
+
+
 # File variables ---------------------------------------------------------------
 
 # vim: filetype=python
