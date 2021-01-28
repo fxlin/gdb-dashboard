@@ -1,5 +1,7 @@
 # GDB dashboard
 
+**+ aarch64 fix to better suit our kernel hacking practice**
+
 GDB dashboard is a standalone `.gdbinit` file written using the [Python API][] that enables a modular interface showing relevant information about the program being debugged. Its main goal is to reduce the number of GDB commands needed to inspect the status of current program thus allowing the developer to primarily focus on the control flow.
 
 ![Screenshot](gdb-dash-aarch64.png)
