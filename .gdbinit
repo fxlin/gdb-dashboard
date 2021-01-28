@@ -2008,8 +2008,20 @@ The empty list (default) causes to show all the available registers.''',
     @staticmethod
     def fetch_register_list(*match_groups):
         names = []
+        is_aarch64 = 'aarch64' in run('show arch')
         for line in run('maintenance print register-groups').split('\n'):
             fields = line.split()
+            # xzl: aarch64 reg list does not have 7 fields. and some regs miss "types". so need some quick fix
+            if is_aarch64:
+                #name, _, _, _, _, _, groups = fields
+                if len(fields) == 0:
+                    continue
+                name = fields[0]
+            # xzl: TODO: add more regs as needed, e.g. SCR_EL1
+                if name[0] == 'x' or name in ['sp','pc','cpsr']:
+                    names.append(name)
+                continue
+            # otherwise, treat it i386  
             if len(fields) != 7:
                 continue
             name, _, _, _, _, _, groups = fields
