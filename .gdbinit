@@ -35,6 +35,24 @@ import re
 import struct
 import traceback
 
+# xzl: copied from GEF
+def gdb_get_location_from_symbol(address):
+     # Retrieve the location of the `address` argument from the symbol table.
+     # Return a tuple with the name and offset if found, None otherwise
+     # this is horrible, ugly hack and shitty perf...
+     # find a *clean* way to get gdb.Location from an address
+     name = None
+     sym = gdb.execute("info symbol {:#x}".format(address), to_string=True)
+     if sym.startswith("No symbol matches"):
+         return None
+
+     i = sym.find(" in section ")
+     sym = sym[:i].split()
+     name, offset = sym[0], 0
+     if len(sym) == 3 and sym[2].isdigit():
+         offset = int(sym[2])
+     return name, offset
+
 # Common attributes ------------------------------------------------------------
 
 class R():
@@ -1363,7 +1381,7 @@ The instructions constituting the current statement are marked, if available.'''
         for index, instr in enumerate(asm):
             addr = instr['addr']
             length = instr['length']
-            text = instr['asm']
+            text = instr['asm']   # xzl: what's this
             addr_str = format_address(addr)
             if self.show_opcodes:
                 # fetch and format opcode
@@ -1419,6 +1437,7 @@ The instructions constituting the current statement are marked, if available.'''
             else:
                 breakpoint = ansi('!', R.style_critical) if enabled else ansi('-', R.style_low)
             out.append(format_string.format(breakpoint, addr_str, indicator, opcodes, func_info, text))
+        # xzl: todo: add instruction semantics
         # return the output along with scroll indicators
         if len(out) <= height:
             extra = [ansi('~', R.style_low)]
@@ -1639,11 +1658,38 @@ Optionally list the frame arguments and locals too.'''
                 break
         # format the output
         lines = []
+        if self.downwards: # xzl
+            lines.append('(Stack grows downwards)')
+            frames = reversed(frames)
+        else:
+            lines.append('(Stack grows upwards)')
         for frame_lines in frames:
             lines.extend(frame_lines)
         # add the placeholder
         if more:
             lines.append('[{}]'.format(ansi('+', R.style_selected_2)))
+        #lines.append('...') # xzl: add extra lines
+        if self.raw:
+            sp_value = gdb.parse_and_eval('$sp')
+            inferior = gdb.selected_inferior()
+            memory = inferior.read_memory(sp_value, 32) # 4 entries, 32 bytes
+            if self.downwards:
+                s = len(memory)-8
+                e = -8
+                ss = -8
+            else:
+                s = 0
+                e = len(memory)
+                ss = 8
+            for i in range(s, e, ss): # descending order
+                '''
+                content = memory[i] & (memory[i+1] << 8) \
+                    & (memory[i+2] << 16) & (memory[i+3] << 24) \
+                    & (memory[i+4] << 32) & (memory[i+5] << 30) \
+                    & (memory[i+6] << 48) & (memory[i+7] << 56)
+                '''
+                content = int.from_bytes(memory[i:i+8],byteorder='little')
+                lines.append('{}($sp+{:02d}):{:016x}'.format(sp_value+i, i, content))
         return lines
 
     def attributes(self):
@@ -1680,6 +1726,16 @@ Optionally list the frame arguments and locals too.'''
                 'doc': 'Sort variables by name.',
                 'default': False,
                 'type': bool
+            },
+            'raw': {
+                'doc': 'show raw contents at stack top.',
+                'default': True,
+                'type': bool
+            },         
+            'downwards' : {
+                'doc' : 'show stacktrace in a downward fashion.',
+                'default' : True,
+                'type' : bool
             }
         }
 
@@ -1933,6 +1989,92 @@ class Registers(Dashboard.Module):
                 continue
             value = gdb.parse_and_eval('${}'.format(name))
             string_value = Registers.format_value(value)
+            # xzl: special handling for aarch64
+            if name[0] == 'x':
+                reg_no = int(name[1:])
+                if reg_no == 8:
+                    name += '/XR'
+                if reg_no == 16:
+                    name += '/IP0'
+                if reg_no == 17:
+                    name += '/IP1'
+                if reg_no == 18:
+                    name += '/PR'
+                if reg_no == 29:
+                    name += '/FP'
+                if reg_no == 30:
+                    name += '/LR'
+                    if self.decode: 
+                        symoffset = gdb_get_location_from_symbol(int(value))
+                        if symoffset: 
+                            sym, offset = symoffset
+                            string_value = ' {}+{}'.format(sym, offset) # overwrite
+                if reg_no >= 0 and reg_no <= 7: # para/res regs
+                    name = 'x' + name[1:]
+
+            if name == 'cpsr': 
+                '''
+                for aarch64 this is PSTATE. there's no such a phys reg though. qemu synthesizes PSTATE using the same format of SPSR
+                https://developer.arm.com/docs/ddi0595/g/aarch64-system-registers/spsr_el1
+                '''
+                exec_state = value & (1<<4)
+                if exec_state == 0:
+                    name = 'PSTATE'
+                    if self.decode: 
+                        # string_value += ' ' 
+                        string_value = ''  # overwrite raw value
+                        string_value += ['n','N'][(value >> 31) & 1]
+                        string_value += ['z','Z'][(value >> 30) & 1]
+                        string_value += ['c','C'][(value >> 29) & 1]
+                        string_value += ['v','V'][(value >> 28) & 1]
+                        string_value += ['d','D'][(value >> 9) & 1]
+                        string_value += ['a','A'][(value >> 8) & 1]
+                        string_value += ['i','I'][(value >> 7) & 1]
+                        string_value += ['f','F'][(value >> 6) & 1]
+
+                        mbits = value & 0b111
+                        if mbits == 0b000:
+                            string_value += ' EL0t'
+                        elif mbits == 0b0100:
+                            string_value += ' EL1t'
+                        elif mbits == 0b0101:
+                            string_value += ' EL1h'
+                        else:
+                            string_value += ' ???'
+
+                # for aarch32 only. TBD 
+                '''
+                mbits = value & 0xf
+                if mbits == 0:
+                    string_value += 'Usr'
+                elif mbits == 0b0001:
+                    string_value += 'FIQ'
+                elif mbits == 0b0010:
+                    string_value += 'IRQ'
+                elif mbits == 0b0011:
+                    string_value += 'Sup'
+                elif mbits == 0b0110:
+                    string_value += 'Mon'
+                elif mbits == 0b0111:
+                    string_value += 'Abt'
+                elif mbits == 0b1011:
+                    string_value += 'Udf'
+                elif mbits == 0b1111:
+                    string_value += 'Sys'
+                else:
+                    string_value += '???'
+                '''
+
+            if name == 'DAIF':
+                string_value += ' msk:'
+                if value & (1 << 9):
+                    string_value += ' Dbg'
+                if value & (1 << 8):
+                    string_value += ' SError'
+                if value & (1 << 7):
+                    string_value += ' IRQ'
+                if value & (1<<6):
+                    string_value += ' FIQ'
             changed = self.table and (self.table.get(name, '') != string_value)
             self.table[name] = string_value
             registers.append((name, string_value, changed))
@@ -1968,7 +2110,15 @@ class Registers(Dashboard.Module):
             max_name = max_names_column[i]
             max_value = max_values_column[i]
             for j, (name, value, changed) in enumerate(column):
-                name = ' ' * (max_name - len(name)) + ansi(name, R.style_low)
+                # xzl: aarch64 treatment
+                name_style = R.style_low
+                if name[0] == 'x':
+                    reg_no = int(name[1:].split('/')[0])
+                    if reg_no >= 19 and reg_no <= 29: # callee saved
+                        name_style = R.style_critical
+                    if reg_no >= 0 and reg_no <= 7: # para/res regs
+                        name_style = R.style_high
+                name = ' ' * (max_name - len(name)) + ansi(name, name_style)
                 style = R.style_selected_1 if changed else ''
                 value = ansi(value, style) + ' ' * (max_value - len(value))
                 padding = ' ' * padding_column[i]
@@ -1990,6 +2140,12 @@ class Registers(Dashboard.Module):
 The empty list (default) causes to show all the available registers.''',
                 'default': '',
                 'name': 'register_list',
+            },
+            'decode' : {
+                'doc' : 'Decode some regs instead of showing raw values (aarch64).',
+                'default' : True,
+                'name' : 'decode',
+                'type' : bool
             }
         }
 
@@ -2018,7 +2174,8 @@ The empty list (default) causes to show all the available registers.''',
                     continue
                 name = fields[0]
             # xzl: TODO: add more regs as needed, e.g. SCR_EL1
-                if name[0] == 'x' or name in ['sp','pc','cpsr']:
+            # this needs hacks of qemu for it to pass some sys regs over
+                if name[0] == 'x' or name in ['sp','pc','cpsr','CURRENTEL','TTBR0_EL1','TTBR1_EL1']:
                     names.append(name)
                 continue
             # otherwise, treat it i386  
@@ -2287,14 +2444,22 @@ set python print-stack full
 python Dashboard.start()
 
 # --- kernel hacking (qemu) specific --- #
+file build/kernel8.elf
 target remote :1234
 
-dashboard -layout breakpoints registers assembly stack source
+#dashboard -layout breakpoints registers assembly stack source variables expressions memory
+#dashboard -layout breakpoints registers stack expressions assembly source memory
+dashboard -layout breakpoints registers stack assembly source
 dashboard source -style height 20
-dashboard assembly -style height 20
+dashboard assembly -style height 10
 dashboard registers -style column-major True
+dashboard stack -style arguments True
+#dashboard stack -style downwards False
+dashboard stack -style locals False
 
 
+# watch the stack contents. 16 elements
+# dashboard expressions watch /16 ((unsigned long *)$sp)[0]@16
 
 # File variables ---------------------------------------------------------------
 
