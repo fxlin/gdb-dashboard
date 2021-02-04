@@ -1378,10 +1378,12 @@ The instructions constituting the current statement are marked, if available.'''
         max_length = max(instr['length'] for instr in asm) if asm else 0
         inferior = gdb.selected_inferior()
         out = []
+        current_text = None # xzl: interpretation of current insn
         for index, instr in enumerate(asm):
             addr = instr['addr']
             length = instr['length']
-            text = instr['asm']   # xzl: what's this
+            text = instr['asm']   # xzl: this is the textual instruction
+            op = instr['asm_raw'].split()[0]  
             addr_str = format_address(addr)
             if self.show_opcodes:
                 # fetch and format opcode
@@ -1401,6 +1403,7 @@ The instructions constituting the current statement are marked, if available.'''
             else:
                 func_info = ''
             format_string = '{}{}{}{}{}{}'
+            #format_string = '{}{}{} opcodes:{} func_info:{} text:{}' # xzl; debug
             indicator = '  '
             text = ' ' + text
             if addr == frame.pc():
@@ -1436,8 +1439,60 @@ The instructions constituting the current statement are marked, if available.'''
                 breakpoint = ' '
             else:
                 breakpoint = ansi('!', R.style_critical) if enabled else ansi('-', R.style_low)
-            out.append(format_string.format(breakpoint, addr_str, indicator, opcodes, func_info, text))
-        # xzl: todo: add instruction semantics
+            # xzl: add instruction semantics    
+            # https://developer.arm.com/documentation/dui0802/a/A64-General-Instructions/
+            insns = {
+                'and'   : 'Logical AND',
+                'mov'   : 'Move register to register',
+                'movk'  : 'Move 16-bit immediate into register, keeping other bits unchanged',
+                'b'    : 'Branch unconditionally to a label at a PC-relative offset',
+                'br'    : 'Branch unconditionally to an address in a register',
+                'bl'    : 'Branch with link, calls a subroutine at a PC-relative offset, setting register X30 to PC + 4',
+                'blr'   : 'Branch with link to register, calls a subroutine at an address in a register, setting register X30 to PC + 4',
+                'cmp'   : 'Compare',
+                'ret'   : 'Return',
+                'ldr'   : 'Load from memory',
+                'str'   : 'Unprivileged Store, byte, halfword, or word',
+                'stp'   : 'Store Pair of Registers',
+                'b.gt'  : 'Branch if greater than',
+                'b.ne'  : 'Branch if non-equal',
+                'b.ls'  : 'Branch if unsigned lower or same',
+                'b.hs'  : 'Branch if unsigned higher or same',
+                'msr'   : 'Move to system register',
+                'mrs'   : 'Move from system register',
+                'adr'   : 'Generate a register-relative address in the destination register',
+                'adrp'  : 'Address of 4KB page at a PC-relative offset',
+                'subs'  : 'Subtract w/ setting flags',
+                'sub'   : 'Subtract without carry',
+                'cbz'   : 'Compare & branch on zero',
+                'cbnz'   : 'Compare & branch on non-zero',
+                'lsr'   : 'Logical shift right',
+                'lsl'   : 'Logical shift left',
+                'orr'   : 'Bitwise inclusive OR',
+                'add'   : 'Add',
+                'svc'   : 'Supervisor call to allow application code to call the OS. It generates an exception targeting exception level 1 (EL1)'
+            }
+            sys_regs = {
+                'mpidr_el1' : 'Multiprocessor Affinity Register (EL1)',
+                'sctlr_el1' : 'System Control Register (EL1)',
+                'hcr_el2'   : 'Hypervisor Configuration Register',
+                'spsr_el2'  : 'Saved Program Status Register (EL2)',
+                'elr_el2'   : 'Exception Link Register (EL2)',
+                'vbar_el1'  : '',
+                'daifclr'   : '',
+                'daifset'   : '',
+                'CNTP_CTL_EL0' : '',
+                'CNTP_TVAL_EL0' : ''
+            }
+            if op in insns and addr == frame.pc():  # only interpret the current insn
+                #text += '//' + insns[op]
+                current_text = op + "=" + insns[op]
+                for sr in sys_regs:
+                    if sr in instr['asm_raw']:
+                        current_text += '; {}={}'.format(sr, sys_regs[sr])
+            out.append(format_string.format(breakpoint, addr_str, indicator, opcodes, func_info, text))        
+        if current_text:
+            out.append(current_text)
         # return the output along with scroll indicators
         if len(out) <= height:
             extra = [ansi('~', R.style_low)]
@@ -1517,6 +1572,7 @@ A value of 0 uses the whole height.''',
             self.cache_asm = asm
             # syntax highlight the cached entry
             for instr in asm:
+                instr['asm_raw'] = instr['asm'] # xzl: w/o higlight, to be parsed later
                 instr['asm'] = highlighter.process(instr['asm'])
         return asm
 
@@ -2450,8 +2506,9 @@ target remote :1234
 #dashboard -layout breakpoints registers assembly stack source variables expressions memory
 #dashboard -layout breakpoints registers stack expressions assembly source memory
 dashboard -layout breakpoints registers stack assembly source
-dashboard source -style height 20
-dashboard assembly -style height 10
+dashboard source -style height 15
+dashboard assembly -style height 8
+dashboard assembly -style show_opcodes True
 dashboard registers -style column-major True
 dashboard stack -style arguments True
 #dashboard stack -style downwards False
